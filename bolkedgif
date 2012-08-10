@@ -1,0 +1,140 @@
+#!/bin/sh
+# http://bolknote.ru 2012 Evgeny Stepanischev
+
+[ -r "$1" ] || exit
+[ -n "$2" ] || exit
+
+# конфигурация
+TEMP=temp
+PATHTOIMAGIC=/usr/local/bin/
+
+# есть у нас ImageMagic?
+HAVEIMAGIC=
+
+if [ -x "$PATHTOIMAGIC"/convert ]; then
+    HAVEIMAGIC=split
+
+    # если нет утилиты gifinter, то проверим, не пригоден ли ImageMagic
+    # для конвертации
+    which -s gifinter
+
+    if [ $? -eq 1 ]; then
+        # проверим, пригоден ли он для конвертации
+        gif='R0lGODdhCgAKAPMJAODg/x8f/z4+/1BQ/2Bg/5+f/6+v/8HB/////wAA/wAAAAAAAAAAAA
+        AAAAAAAAAAACwAAAAACgAKAAAEMBBJcERIWCJqcdLchQHkYQxWEBysURCoIMsDURjsoQbCg
+        JMAD+8A0AgFRCNmWJREAAA7'
+
+        no=$(echo $gif | base64 -D | "$PATHTOIMAGIC"/convert +compress - - | wc -c)
+        yes=$(echo $gif | base64 -D | "$PATHTOIMAGIC"/convert - - | wc -c)
+
+        [ $yes -eq $no ] || HAVEIMAGIC=yes
+    fi
+fi
+
+# Создаём временный директорий, если он есть, просто очищаем
+mkdir -p "$TEMP"
+rm -f "$TEMP"/*
+
+# ImageMagic не работает с несжатыми GIF? попробуем libungif
+if [ "$HAVEIMAGIC"==split ]; then
+    which -s gifinter
+
+    if [ $? -eq 1 ]; then
+        echo "Ошибка: не обнаружены libungif (предпочтительнее) или ImageMagic 5.2.0."
+        exit 1
+    fi
+fi
+
+# ImageMagic нет вообще? жаль, пробуем gifsicle
+if [ -z "$HAVEIMAGIC" ]; then
+    which -s gifsicle
+
+    if [ $? -eq 1 ]; then
+        echo "Ошибка: не обнаружены ImageMagic (предпочтительнее) или gifsicle"
+        exit 1
+    fi
+fi
+
+# Смотрим какой Пайтон у нас в наличии
+which -s pypy
+if [ $? -eq 1 ]; then
+    which -s python
+
+    if [ $? -eq 1 ]; then
+        echo "Ошибка: для запуска нужен python или PyPy."
+        exit 1
+    fi
+    PYTHON=python
+else
+    PYTHON=pypy
+fi
+
+# Запускаем сканирование структуры
+"$PYTHON" gifreadstructure.py "$1" > "$TEMP"/structure.cfg &
+if [ -z "$HAVEIMAGIC" ]; then
+    gifsicle -e -o "$TEMP"/frame "$1" 2>/dev/null &
+    wait
+else
+    wait
+
+    # сколько получилось кадров?
+    FRAMES=$(grep -F 'block_id = 44' "$TEMP"/structure.cfg | wc -l)
+    let 'FRAMES--'
+
+    # пускаем конвертацию в фоне
+    proc=0
+    for n in `seq 0 $FRAMES`; do
+        "$PATHTOIMAGIC"/convert +compress "${1}[${n}]" $(printf "%s/%s%03d" "$TEMP" frame. $n) 2>&- &
+
+        let 'proc++'
+
+        if [ $proc -gt 5 ]; then
+            wait
+            proc=0
+        fi
+    done
+
+    wait
+fi
+
+# почти всё сделано через ImageMagic?
+if [ "$HAVEIMAGIC"==yes ]; then
+    proc=0
+
+    for name in "$TEMP"/frame.*; do
+        (
+            "$PYTHON" gifreadstructure.py --body=1 "$name" > "$TEMP/${name##*.}.raw"
+            rm -f "$name"
+        ) &
+
+        let 'proc++'
+
+        if [ $proc -gt 5 ]; then
+            wait
+            proc=0
+        fi
+    done
+    wait
+else
+    proc=0
+
+    for name in "$TEMP"/frame.*; do
+        (
+            gifinter "$name" |
+            "$PYTHON" gifreadstructure.py --body=1 - > "$TEMP/${name##*.}.raw"
+            rm -f "$name"
+        ) &
+
+        let 'proc++'
+
+        if [ $proc -gt 5 ]; then
+            wait
+            proc=0
+        fi
+    done
+    wait
+fi
+
+"$PYTHON" gifwritestructure.py "$TEMP" | gzip -9ncf > "$2"
+rm -rf "$TEMP"
+
