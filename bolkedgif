@@ -1,8 +1,12 @@
 #!/bin/sh
 # http://bolknote.ru 2012 Evgeny Stepanischev
 
-[ -r "$1" ] || exit
-[ -n "$2" ] || exit
+[ -r "$1" ] && [ -n "$2" ] && file -b "$1" | grep -Fq GIF
+if [ $? -eq 1 ]; then
+    echo Использование:
+    echo '  '$0 исходный.gif сжатый.gif-gz
+    exit 0
+fi
 
 # конфигурация
 TEMP=temp
