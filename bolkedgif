@@ -16,27 +16,16 @@ MAGICSPLIT=
 
 which -s convert
 if [ $? -eq 0 ]; then
+    MAGICSPLIT=yes
 
-    # проверим, пригоден ли он для конвертации
-    gif='R0lGODdhCgAKAPMJAODg/x8f/z4+/1BQ/2Bg/5+f/6+v/8HB/////wAA/wAAAAAAAAAAAA
-    AAAAAAAAAAACwAAAAACgAKAAAEMBBJcERIWCJqcdLchQHkYQxWEBysURCoIMsDURjsoQbCg
-    JMAD+8A0AgFRCNmWJREAAA7'
-
-    no=$(echo $gif | base64 -D | convert +compress - - | wc -c)
-    yes=$(echo $gif | base64 -D | convert - - | wc -c)
-
-    if [ $yes -eq $no ]; then
-        MAGICSPLIT=yes
-
-        which -s gifinter
-        if [ $? -eq 1 ]; then
-            echo Ошибка: не обнаружена утилита gifinter из библиотеки libungif
-        fi
-    else
-        which -s gifsicle
-        if [ $? -eq 1 ]; then
-            echo Ошибка: не обнаружена утилита gifsicle
-        fi
+    which -s gifinter
+    if [ $? -eq 1 ]; then
+        echo Ошибка: не обнаружена утилита gifinter из библиотеки libungif
+    fi
+else
+    which -s gifsicle
+    if [ $? -eq 1 ]; then
+        echo Ошибка: не обнаружена утилита gifsicle
     fi
 fi
 
