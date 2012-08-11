@@ -13,51 +13,42 @@ TEMP=temp
 PATHTOIMAGIC=/usr/local/bin/
 
 # есть у нас ImageMagic?
-HAVEIMAGIC=
+MAGICSPLIT=
+MAGICUNCOMPRESS=
 
 if [ -x "$PATHTOIMAGIC"/convert ]; then
-    HAVEIMAGIC=split
 
-    # если нет утилиты gifinter, то проверим, не пригоден ли ImageMagic
-    # для конвертации
-    which -s gifinter
+    # проверим, пригоден ли он для конвертации
+    gif='R0lGODdhCgAKAPMJAODg/x8f/z4+/1BQ/2Bg/5+f/6+v/8HB/////wAA/wAAAAAAAAAAAA
+    AAAAAAAAAAACwAAAAACgAKAAAEMBBJcERIWCJqcdLchQHkYQxWEBysURCoIMsDURjsoQbCg
+    JMAD+8A0AgFRCNmWJREAAA7'
 
-    if [ $? -eq 1 ]; then
-        # проверим, пригоден ли он для конвертации
-        gif='R0lGODdhCgAKAPMJAODg/x8f/z4+/1BQ/2Bg/5+f/6+v/8HB/////wAA/wAAAAAAAAAAAA
-        AAAAAAAAAAACwAAAAACgAKAAAEMBBJcERIWCJqcdLchQHkYQxWEBysURCoIMsDURjsoQbCg
-        JMAD+8A0AgFRCNmWJREAAA7'
+    no=$(echo $gif | base64 -D | "$PATHTOIMAGIC"/convert +compress - - | wc -c)
+    yes=$(echo $gif | base64 -D | "$PATHTOIMAGIC"/convert - - | wc -c)
 
-        no=$(echo $gif | base64 -D | "$PATHTOIMAGIC"/convert +compress - - | wc -c)
-        yes=$(echo $gif | base64 -D | "$PATHTOIMAGIC"/convert - - | wc -c)
+    if [ $yes -eq $no ]; then
+        MAGICSPLIT=yes
 
-        [ $yes -eq $no ] || HAVEIMAGIC=yes
+        which -s gifinter
+        if [ $? -eq 1 ]; then
+            echo Ошибка: не обнаружена утилита gifinter из библиотеки libungif
+        fi
+    else
+        MAGICUNCOMPRESS=yes
+
+        # если есть gifinter, то берём его — эффективнее
+        which -s gifinter && MAGICUNCOMPRESS=
+
+        which -s gifsicle
+        if [ $? -eq 1 ]; then
+            echo Ошибка: не обнаружена утилита gifsicle
+        fi
     fi
 fi
 
 # Создаём временный директорий, если он есть, просто очищаем
 mkdir -p "$TEMP"
 rm -f "$TEMP"/*
-
-# ImageMagic не работает с несжатыми GIF? попробуем libungif
-if [ "$HAVEIMAGIC"==split ]; then
-    which -s gifinter
-
-    if [ $? -eq 1 ]; then
-        echo "Ошибка: не обнаружены libungif (предпочтительнее) или ImageMagic 5.2.0."
-        exit 1
-    fi
-fi
-
-# ImageMagic нет вообще? жаль, пробуем gifsicle
-if [ -z "$HAVEIMAGIC" ]; then
-    which -s gifsicle
-
-    if [ $? -eq 1 ]; then
-        echo "Ошибка: не обнаружены ImageMagic (предпочтительнее) или gifsicle"
-        exit 1
-    fi
-fi
 
 # Смотрим какой Пайтон у нас в наличии
 which -s pypy
@@ -75,11 +66,17 @@ fi
 
 # Запускаем сканирование структуры
 "$PYTHON" gifreadstructure.py "$1" > "$TEMP"/structure.cfg &
-if [ -z "$HAVEIMAGIC" ]; then
+echo Сканируем структуру
+
+if [ -z "$MAGICSPLIT" ]; then
+    echo Разбиваем на кадры утилитой gifsicle
+
     gifsicle -e -o "$TEMP"/frame "$1" 2>/dev/null &
     wait
 else
     wait
+
+    echo Разбиваем на кадры при помощи ImageMagic
 
     # сколько получилось кадров?
     FRAMES=$(grep -F 'block_id = 44' "$TEMP"/structure.cfg | wc -l)
@@ -88,7 +85,7 @@ else
     # пускаем конвертацию в фоне
     proc=0
     for n in `seq 0 $FRAMES`; do
-        "$PATHTOIMAGIC"/convert +compress "${1}[${n}]" $(printf "%s/%s%03d" "$TEMP" frame. $n) 2>&- &
+        "$PATHTOIMAGIC"/convert +compress "${1}[${n}]" $(printf "%s/%s%03d" "$TEMP" frame. $n) &
 
         let 'proc++'
 
@@ -101,44 +98,59 @@ else
     wait
 fi
 
-# почти всё сделано через ImageMagic?
-if [ "$HAVEIMAGIC"==yes ]; then
-    proc=0
+echo Получилось кадров: $(ls -1 "$TEMP"/frame.* | wc -l)
 
-    for name in "$TEMP"/frame.*; do
-        (
-            "$PYTHON" gifreadstructure.py --body=1 "$name" > "$TEMP/${name##*.}.raw"
-            rm -f "$name"
-        ) &
+CompileDirect() {
+    "$PYTHON" gifreadstructure.py --body=1 "$1" > "$TEMP/${1##*.}.raw"
+    rm -f "$1"
+}
 
-        let 'proc++'
+CompileGifinter() {
+    gifinter "$1" |
+    "$PYTHON" gifreadstructure.py --body=1 - > "$TEMP/${1##*.}.raw"
+    rm -f "$1"
+}
 
-        if [ $proc -gt 5 ]; then
-            wait
-            proc=0
-        fi
-    done
-    wait
+if [ -z "$MAGICUNCOMPRESS" ]; then
+    FUNC=CompileGifinter
+    echo Перепаковка кадра утилитой gifinter
 else
-    proc=0
-
-    for name in "$TEMP"/frame.*; do
-        (
-            gifinter "$name" |
-            "$PYTHON" gifreadstructure.py --body=1 - > "$TEMP/${name##*.}.raw"
-            rm -f "$name"
-        ) &
-
-        let 'proc++'
-
-        if [ $proc -gt 5 ]; then
-            wait
-            proc=0
-        fi
-    done
-    wait
+    FUNC=CompileDirect
+    echo Сборка кадра после обработки ImageMagic
 fi
 
+proc=0
+
+for name in "$TEMP"/frame.*; do
+    ( $FUNC "$name" ) &
+    let 'proc++'
+
+    if [ $proc -gt 5 ]; then
+        wait
+        proc=0
+    fi
+done
+
+wait
+
+echo Сборка и сжатие результата
 "$PYTHON" gifwritestructure.py "$TEMP" | gzip -9ncf > "$2"
 rm -rf "$TEMP"
+
+echo Результат занимает $(ls -hl "$2" | awk '{print $5}'), исходный файл $(ls -hl "$1" | awk '{print $5}')
+
+newsize=$(ls -l "$2" | awk '{print $5}')
+origsize=$(ls -l "$1" | awk '{print $5}')
+
+let 'diff=origsize-newsize'
+
+case $diff in
+    0  )
+        echo Результат не изменился;;
+    -* )
+        echo Проигрыш: $diff байт;;
+    *  )
+        echo Выигрыш: $diff байт;;
+esac
+
 
