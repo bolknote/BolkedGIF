@@ -6,7 +6,6 @@
     — libungif
 
 ImageMagick можно заметить на gifsicle (но при работе возможно порча некоторых файлов анимации).
-libungif можно заменить на ImageMagic версии 5.2.0 (но результат сжатия будет хуже)
 
 пример использования:
     ./bolkedgif anim.gif anim.gif-gz
