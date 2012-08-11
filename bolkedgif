@@ -1,7 +1,7 @@
 #!/bin/sh
 # http://bolknote.ru 2012 Evgeny Stepanischev
 
-[ -r "$1" ] && [ -n "$2" ] && file -b "$1" | grep -Fq GIF
+[ -r "$1" ] && [ -n "$2" ] && grep -q '^GIF8.a' "$1"
 if [ $? -eq 1 ]; then
     echo Использование:
     echo '  '$0 исходный.gif сжатый.gif-gz
