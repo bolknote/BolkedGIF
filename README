@@ -14,3 +14,5 @@ ImageMagick можно заметить на gifsicle (но при работе 
 
     AddEncoding gzip .gif-gz
     AddType image/gif .gif-gz
+
+P.S. статус проекта — proof-of-concept, proof не удался, GIF сжался, но занял больше, чем обычный
