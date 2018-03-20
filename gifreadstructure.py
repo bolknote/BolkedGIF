@@ -225,7 +225,7 @@ def readGif(name, single):
                     0x21: readExtensionBlock,
                     0x3B: lambda f: {'raw': [f.read(1)]}, # конец изображения
                 }.get(blockid)(f)
-            except TypeError, e:
+            except TypeError as e:
                 raise TypeError(blockid)
 
             # выдача тела

@@ -33,19 +33,14 @@ fi
 mkdir -p "$TEMP"
 rm -f "$TEMP"/*
 
-# Смотрим какой Пайтон у нас в наличии
-which -s pypy
-if [ $? -eq 1 ]; then
-    which -s python
+# Смотрим есть ли Пайтон 2.7 у нас в наличии
+which -s python2.7
 
-    if [ $? -eq 1 ]; then
-        echo "Ошибка: для запуска нужен python или PyPy."
-        exit 1
-    fi
-    PYTHON=python
-else
-    PYTHON=pypy
+if [ $? -eq 1 ]; then
+    echo "Ошибка: для запуска нужен python 2.7"
+    exit 1
 fi
+PYTHON=python2.7
 
 # Запускаем сканирование структуры
 "$PYTHON" gifreadstructure.py "$1" > "$TEMP"/structure.cfg &
