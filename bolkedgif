@@ -14,7 +14,7 @@ TEMP=temp
 # есть у нас ImageMagic?
 MAGICSPLIT=
 
-which -s convert
+which -s magick
 if [ $? -eq 0 ]; then
     MAGICSPLIT=yes
 
@@ -33,14 +33,15 @@ fi
 mkdir -p "$TEMP"
 rm -f "$TEMP"/*
 
-# Смотрим есть ли Пайтон 2.7 у нас в наличии
-which -s python2.7
+PYTHON=python3
+
+# Смотрим есть ли Пайтон у нас в наличии
+which -s "$PYTHON"
 
 if [ $? -eq 1 ]; then
-    echo "Ошибка: для запуска нужен python 2.7"
+    echo "Ошибка: для запуска нужен python3"
     exit 1
 fi
-PYTHON=python2.7
 
 # Запускаем сканирование структуры
 "$PYTHON" gifreadstructure.py "$1" > "$TEMP"/structure.cfg &
@@ -57,13 +58,13 @@ else
     echo Разбиваем на кадры при помощи ImageMagic
 
     # сколько получилось кадров?
-    FRAMES=$(grep -F 'block_id = 44' "$TEMP"/structure.cfg | wc -l)
+    FRAMES=$(grep -Fc 'block_id = 44' "$TEMP"/structure.cfg)
     let 'FRAMES--'
 
     # пускаем конвертацию в фоне
     proc=0
     for n in `seq 0 $FRAMES`; do
-        convert "${1}[${n}]" $(printf "%s/%s%03d" "$TEMP" frame. $n) &
+        magick convert "${1}[${n}]" $(printf "%s/%s%03d" "$TEMP" frame. $n) &
 
         let 'proc++'
 
@@ -84,7 +85,7 @@ proc=0
 for name in "$TEMP"/frame.*; do
     (
         gifinter "$name" |
-        "$PYTHON" gifreadstructure.py --body=1 - > "$TEMP/${name##*.}.raw"
+        "$PYTHON" gifreadstructure.py --body - > "$TEMP/${name##*.}.raw"
         rm -f "$name"
     ) &
     let 'proc++'

@@ -1,0 +1,6 @@
+.DS_Store
+
+*gif*
+!bolkedgif
+!gifreadstructure.py
+!gifwritestructure.py

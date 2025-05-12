@@ -1,250 +1,281 @@
-# coding: utf-8
-# http://bolknote.ru 2012 Evgeny Stepanischev
-from __future__ import print_function
-from struct import unpack_from
-import struct
-import itertools
-import ConfigParser
-import sys
+#!/usr/bin/env python3
+
+from __future__ import annotations
+
 import argparse
+import configparser
+import itertools
+import struct
+import sys
+from struct import calcsize, unpack_from
+from typing import (
+    Any,
+    BinaryIO,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Sequence,
+    Tuple,
+    Union,
+)
 
-def readBlockDec(key, value):
-    """Дорасшифровка флагов"""
+BitFieldLayout = Tuple[Tuple[str, int], ...]
+LayoutItem = Tuple[Union[str, BitFieldLayout], str]
+Layout = Sequence[LayoutItem]
 
-    if isinstance(key, basestring): return ((key, value),)
+ParsedBlock = Dict[str, Union[int, bytes, List[int], Iterable[bytes], Any]]
 
-    shift, out = 0, []
 
-    # расшифровка битовых значений. На входе: (имя, сколько-занимает-в-битах)
+def read_block_dec(key: Union[str, BitFieldLayout], value: int) -> List[Tuple[str, int]]:
+    """Decode bit-field tuples produced by *read_block*."""
+    if isinstance(key, str):
+        return [(key, value)]
+
+    shift: int = 0
+    out: List[Tuple[str, int]] = []
+
     for name, size in key:
-        if name[:8] != 'reserved':
+        if not name.startswith("reserved"):
             mask = (1 << size) - 1
-
-            val = (value >> shift) & mask
-            out.append((name, val))
-
+            out.append((name, (value >> shift) & mask))
         shift += size
 
     return out
 
 
-def readBlock(file, map):
-    """Чтение и расшифровка блока"""
+def read_block(fh: BinaryIO, layout: Layout) -> ParsedBlock:
+    """
+    Read a binary structure according to *layout*.
 
-    # собираем формат и читаем столько, сколько в формат умещается
-    format   = '< ' + ' '.join(x[1] for x in map)
-    calcsize = struct.calcsize(format)
+    Each entry in *layout* is ``(key, struct_format)`` where *key* is either
+    a string (scalar field) or a :pydata:`BitFieldLayout`.
 
-    binary  = file.read(calcsize)
-    content = unpack_from(format, binary)
+    The returned dict always contains a ``raw`` key with the bytes read.
+    """
+    fmt: str = "<" + "".join(fmt for _key, fmt in layout)
+    size: int = calcsize(fmt)
 
-    # сборка декодированных значений, за вычетом пустых (это формат «x») значений
-    out = dict(itertools.chain(
-        *(readBlockDec(key, value)
-            for key, value in itertools.izip(
-                (x[0] for x in map if not ~x[1].find('x')),
-            content)
+    blob: bytes = fh.read(size)
+    if len(blob) != size:
+        raise EOFError("Unexpected EOF while reading a block")
+
+    parsed = unpack_from(fmt, blob)
+
+    decoded: ParsedBlock = dict(
+        itertools.chain.from_iterable(
+            read_block_dec(k, v)
+            for k, v in zip(
+                (k for k, fmt in layout if "x" not in fmt),  # skip padding
+                parsed,
+            )
         )
-    ))
-
-    out.update({'raw': list(unpack_from(str(len(binary)) + 'B', binary))})
-
-    return out
+    )
+    decoded["raw"] = list(unpack_from(f"{len(blob)}B", blob))
+    return decoded
 
 
-def readImageDescriptor(f):
-    """Чтение дискриптора изображения"""
-
-    info = readBlock(f, (
-        ('x',       'H'),
-        ('y',       'H'),
-        ('width',   'H'),
-        ('height',  'H'),
+def read_image_descriptor(fh: BinaryIO) -> ParsedBlock:
+    info: ParsedBlock = read_block(
+        fh,
         (
+            ("x", "H"),
+            ("y", "H"),
+            ("width", "H"),
+            ("height", "H"),
             (
-                ('LCT size',    3),
-                ('reserved',    2),
-                ('sorted',      1),
-                ('interleaced', 1),
-                ('has LCT',     1),
-            ),'B'
-        )
-    ))
-
-    info['LCT len'] = 3 * pow(2, info['LCT size'] + 1)
-
-    if info['has LCT']:
-       info['colors'] = unpack_from(str(info['LCT len']) + 'B', f.read(info['LCT len']))
-
-    info['image'] = readImage(f)
-    return info
-
-def readGraphicControlExtension(f, size):
-    """Разбор дополнительного блока управления изображением"""
-
-    return readBlock(f, (
-        (
-            (
-                ('transparent flag',1),
-                ('user input',      1),
-                ('disposal method', 3),
-                ('reserved',        3),
-            ), 'B'
+                (
+                    ("LCT size", 3),
+                    ("reserved", 2),
+                    ("sorted", 1),
+                    ("interleaced", 1),
+                    ("has LCT", 1),
+                ),
+                "B",
+            ),
         ),
-        ('delay',               'H'), # 1/100 sec.
-        ('transparent index',   'B'),
-        ('terminator',          'x'),
-    ))
+    )
 
-def ignoreBlock(f, size):
-    """Блок игнорируется"""
-    return {'raw': list(unpack_from(str(size) + 'B', f.read(size + 1)))}
+    info["LCT len"] = 3 * (2 ** (info["LCT size"] + 1))
+    if info["has LCT"]:
+        raw = fh.read(info["LCT len"])
+        info["colors"] = unpack_from(f"{info['LCT len']}B", raw)
 
-def readApplicationExtension(f, size):
-    info = readBlock(f, (
-        ('application id',      '8s'),
-        ('application id code', '3s'),
-    ))
-
-    data = readDataChunks(f)
-
-    raw = ''.join(itertools.chain(*data))
-    info['raw'] += unpack_from(str(len(raw)) + 'B', raw)
-
-    # если это расширение Нетскейпа для зацикливания
-    if info['application id'] + info['application id code'] == 'NETSCAPE2.0':
-        info['loop'] = unpack_from('< x H', data[1])[0]
-    else:
-        info['content'] = data
-
+    info["image"] = read_image(fh)
     return info
 
-def readDataChunks(f):
-    """Чтение кусков данных в формате блоков GIF"""
-    rawsize = f.read(1)
-    size    = unpack_from('B', rawsize)[0]
 
-    chunks = []
+def read_graphic_control_ext(fh: BinaryIO, _size: int) -> ParsedBlock:
+    return read_block(
+        fh,
+        (
+            (
+                (
+                    ("transparent flag", 1),
+                    ("user input", 1),
+                    ("disposal method", 3),
+                    ("reserved", 3),
+                ),
+                "B",
+            ),
+            ("delay", "H"),  # 1/100 s
+            ("transparent index", "B"),
+            ("terminator", "x"),
+        ),
+    )
 
+
+def read_data_chunks(fh: BinaryIO) -> Tuple[bytes, ...]:
+    """Read a GIF *data sub-blocks* sequence and return it as tuple of bytes."""
+    size_b: bytes = fh.read(1)
+    size: int = unpack_from("B", size_b)[0]
+
+    chunks: List[bytes] = []
     while size:
-        chunks.append(rawsize)
-        chunk, rawsize = f.read(size), f.read(1)
-        size = unpack_from('B', rawsize)[0]
-        chunks.append(chunk)
-
-    chunks.append(rawsize)
-
+        chunks.append(size_b)
+        chunks.append(fh.read(size))
+        size_b = fh.read(1)
+        size = unpack_from("B", size_b)[0]
+    chunks.append(size_b)  # trailing 0-byte
     return tuple(chunks)
 
-def readImage(f):
-    """Чтение тела картинки"""
-    lzwsize = f.read(1) # минимальный размер кода LZW
 
-    return itertools.chain( (lzwsize, ), readDataChunks(f))
+def read_image(fh: BinaryIO) -> Iterator[bytes]:
+    lzw_min_code_size: bytes = fh.read(1)  # 1 byte
+    return itertools.chain((lzw_min_code_size,), read_data_chunks(fh))
 
-def readExtensionBlock(f):
-    """Чтение блока расширения"""
-    (marker, size) = unpack_from('BB', f.read(2))
 
-    info = {
-        0xF9: readGraphicControlExtension,
-        0xFE: ignoreBlock, # комментарий
-        0x01: ignoreBlock, # дополнительная текстовая информация
-        0x21: ignoreBlock, # дополнительный блок с простым текстом
-        0xFF: readApplicationExtension,
-    }.get(marker, ignoreBlock)(f, size)
+def ignore_block(fh: BinaryIO, size: int) -> ParsedBlock:
+    return {"raw": list(unpack_from(f"{size + 1}B", fh.read(size + 1)))}
 
-    info['ext id'] = marker
-    info['raw'] = [marker, size] + info['raw']
 
+def read_application_ext(fh: BinaryIO, _size: int) -> ParsedBlock:
+    info: ParsedBlock = read_block(
+        fh,
+        (
+            ("application id", "8s"),
+            ("application id code", "3s"),
+        ),
+    )
+
+    chunks = read_data_chunks(fh)
+    raw = b"".join(chunks)
+    info["raw"].extend(unpack_from(f"{len(raw)}B", raw))
+
+    if info["application id"] + info["application id code"] == b"NETSCAPE2.0":
+        # Netscape loop extension
+        info["loop"] = unpack_from("<xH", chunks[1])[0]
+    else:
+        info["content"] = chunks
     return info
 
-def createIni(section, struct, config):
-    config.add_section(section)
 
-    for key, value in struct.iteritems():
-        key = key.replace(' ', '_')
+def read_extension_block(fh: BinaryIO) -> ParsedBlock:
+    marker, size = unpack_from("BB", fh.read(2))
 
-        if isinstance(value, (int, long, basestring)):
-            config.set(section, key, str(value))
-        else:
+    reader = {
+        0xF9: read_graphic_control_ext,
+        0xFE: ignore_block,  # comment
+        0x01: ignore_block,  # plain-text
+        0x21: ignore_block,  # app-specific (unused here)
+        0xFF: read_application_ext,
+    }.get(marker, ignore_block)
+
+    info = reader(fh, size)
+    info["ext id"] = marker
+    info["raw"] = [marker, size] + info["raw"]
+    return info
+
+
+def add_ini_section(section: str, src: ParsedBlock, cfg: configparser.RawConfigParser) -> None:
+    cfg.add_section(section)
+    for key, value in src.items():
+        key_norm = key.replace(" ", "_")
+        if isinstance(value, (int, bytes, str)):
+            cfg.set(section, key_norm, str(value))
+        else:  # iterable of ints → hex string
             try:
-                config.set(section, key, ''.join(('0' + hex(val)[2:])[-2:] for val in value))
+                cfg.set(section, key_norm, "".join(f"{v:02x}" for v in value))  # type: ignore[arg-type]
             except TypeError:
                 pass
 
-    return config
 
-def readGif(name, single):
-    """чтение GIF на вход — имя"""
+def read_gif(path: str, only_body: bool) -> None:
+    pict_num: int = 1
 
-    pictnum = 1
+    in_fh: BinaryIO
+    if path == "-":
+        in_fh = sys.stdin.buffer
+    else:
+        in_fh = open(path, "rb")
 
-    with sys.stdin if name == '-' else open(name) as f:
-        info = readBlock(f, (
-            ('header',  '3x'),
-            ('version', '3s'),
-            ('width',    'H'),
-            ('height',   'H'),
+    with in_fh as fh:
+        header: ParsedBlock = read_block(
+            fh,
             (
+                ("header", "3x"),
+                ("version", "3s"),
+                ("width", "H"),
+                ("height", "H"),
                 (
-                    ('GCT size',         3),
-                    ('sorted',           1),
-                    ('color resolution', 3),
-                    ('has GCT',          1),
-                ), 'B'
+                    (
+                        ("GCT size", 3),
+                        ("sorted", 1),
+                        ("color resolution", 3),
+                        ("has GCT", 1),
+                    ),
+                    "B",
+                ),
+                ("bgcolor index", "B"),
+                ("ratio", "B"),
             ),
-            ('bgcolor index',  'B'),
-            ('ratio',          'B'),
-        ))
+        )
 
-        info['GCT len'] = 3 * pow(2, info['GCT size'] + 1)
+        header["GCT len"] = 3 * (2 ** (header["GCT size"] + 1))
+        if header["has GCT"]:
+            raw = fh.read(header["GCT len"])
+            header["colors"] = unpack_from(f"{header['GCT len']}B", raw)
 
-        if info['has GCT']:
-            #  глобальная таблица цветов
-            info['colors'] = unpack_from(str(info['GCT len']) + 'B', f.read(info['GCT len']))
+        cfg = configparser.RawConfigParser()
+        add_ini_section("global", header, cfg)
 
-        config = ConfigParser.RawConfigParser()
-        createIni('global', info, config)
+        while True:
+            nxt = fh.read(1)
+            if not nxt:
+                break  # EOF
 
-        while 1:
-            # Какой следующий блок у нас?
-            try:
-                blockid = unpack_from('B', f.read(1))[0]
-            except struct.error:
-                # всё, данные кончились
-                break
+            block_id: int = nxt[0]
+            readers = {
+                0x2C: read_image_descriptor,
+                0x21: read_extension_block,
+                0x3B: lambda _fh: {"raw": [0x3B]},  # trailer
+            }
+            block: ParsedBlock = readers.get(block_id, lambda *_: ignore_block(fh, 0))(fh)
 
-            # 0x00-0x7F (0-127) - блоки с графической информацией; исключение составляет блок-терминатор (0x3B);
-            # 0x80-0xF9 (128-249) - блоки управления;
-            # 0xFA-0xFF (250-255) - специальные блоки
+            # `--body` → dump first image body and exit
+            if only_body and block_id == 0x2C:
+                sys.stdout.buffer.write(b"".join(block["image"]))  # type: ignore[arg-type]
+                return
 
-            try:
-                block = {
-                    0x2C: readImageDescriptor,
-                    0x21: readExtensionBlock,
-                    0x3B: lambda f: {'raw': [f.read(1)]}, # конец изображения
-                }.get(blockid)(f)
-            except TypeError as e:
-                raise TypeError(blockid)
+            block["raw"].insert(0, block_id)  # type: ignore[index]
+            block["block id"] = block_id
+            add_ini_section(str(pict_num), block, cfg)
+            pict_num += 1
 
-            # выдача тела
-            if single and blockid == 0x2C:
-                print(''.join(block['image']), end='')
-                return # выход! остальные данные не нужны
+    cfg.write(sys.stdout)
 
-            block['raw'].insert(0, blockid)
-            block['block id'] = blockid
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Parse a GIF into an INI structure")
+    ap.add_argument("gif", help="path to GIF file or '-' for stdin")
+    ap.add_argument(
+        "--body",
+        action="store_true",
+        default=False,
+        help="write only raw GIF image body to stdout",
+    )
+    args = ap.parse_args()
+    read_gif(args.gif, args.body)
 
-            createIni(str(pictnum), block, config)
-            pictnum+=1
 
-    config.write(sys.stdout)
-
-parser = argparse.ArgumentParser(description='Parse GIF to structure')
-parser.add_argument('image', metavar='gif', type=str, help='GIF to parse')
-parser.add_argument('--body', type=bool, required=False, help='only GIF image body', default=False)
-
-args = parser.parse_args()
-
-readGif(args.image, args.body)
+if __name__ == "__main__":
+    main()
