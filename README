@@ -1,18 +1,17 @@
-Утилита для конвертирования анимированных изображений из формата «обычного» GIF
-в формат несжатого GIF, сжатого через gzip
+A utility that converts animated images from the standard GIF format to an uncompressed GIF wrapped in gzip.
 
-Требует для работы:
+Dependencies:
     — ImageMagick
     — libungif
 
-ImageMagick можно заметить на gifsicle (но при работе возможно порча некоторых файлов анимации).
+ImageMagick can be replaced with gifsicle, although this may corrupt some animation files.
 
-пример использования:
+Usage example:
     ./bolkedgif anim.gif anim.gif-gz
 
-для отображения этого формата браузером допишие в .htaccess (если у вас Апач) следующие строки:
+To let a browser display this format, add the following lines to your .htaccess file (for Apache):
 
     AddEncoding gzip .gif-gz
     AddType image/gif .gif-gz
 
-P.S. статус проекта — proof-of-concept, proof не удался, GIF сжался, но занял больше, чем обычный
+P.S. Project status: proof of concept. The proof didn't quite succeed—the GIF was compressed, but the resulting file is larger than the original.
