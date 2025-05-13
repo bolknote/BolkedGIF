@@ -3,15 +3,15 @@
 
 [ -r "$1" ] && [ -n "$2" ] && grep -q '^GIF8.a' "$1"
 if [ $? -eq 1 ]; then
-    echo Использование:
-    echo '  '$0 исходный.gif сжатый.gif-gz
+    echo "Usage:"
+    echo "  $0 source.gif compressed.gif-gz"
     exit 0
 fi
 
-# конфигурация
+# Configuration
 TEMP=temp
 
-# есть у нас ImageMagic?
+# Do we have ImageMagick?
 MAGICSPLIT=
 
 which -s magick
@@ -20,68 +20,62 @@ if [ $? -eq 0 ]; then
 
     which -s gifinter
     if [ $? -eq 1 ]; then
-        echo Ошибка: не обнаружена утилита gifinter из библиотеки libungif
+        echo "Error: the gifinter utility from libungif was not found."
     fi
 else
     which -s gifsicle
     if [ $? -eq 1 ]; then
-        echo Ошибка: не обнаружена утилита gifsicle
+        echo "Error: the gifsicle utility was not found."
     fi
 fi
 
-# Создаём временный директорий, если он есть, просто очищаем
+# Create (or clean) the temporary directory
 mkdir -p "$TEMP"
 rm -f "$TEMP"/*
 
 PYTHON=python3
 
-# Смотрим есть ли Пайтон у нас в наличии
+# Is Python 3 available?
 which -s "$PYTHON"
-
 if [ $? -eq 1 ]; then
-    echo "Ошибка: для запуска нужен python3"
+    echo "Error: python3 is required."
     exit 1
 fi
 
-# Запускаем сканирование структуры
-"$PYTHON" gifreadstructure.py "$1" > "$TEMP"/structure.cfg &
-echo Сканируем структуру
+# Scan GIF structure
+"$PYTHON" gifreadstructure.py "$1" > "$TEMP/structure.cfg" &
+echo "Scanning structure..."
 
 if [ -z "$MAGICSPLIT" ]; then
-    echo Разбиваем на кадры утилитой gifsicle
-
-    gifsicle -e -o "$TEMP"/frame "$1" 2>/dev/null &
+    echo "Splitting into frames with gifsicle..."
+    gifsicle -e -o "$TEMP/frame" "$1" 2>/dev/null &
     wait
 else
     wait
+    echo "Splitting into frames with ImageMagick..."
 
-    echo Разбиваем на кадры при помощи ImageMagic
-
-    # сколько получилось кадров?
-    FRAMES=$(grep -Fc 'block_id = 44' "$TEMP"/structure.cfg)
+    # Count the frames
+    FRAMES=$(grep -Fc 'block_id = 44' "$TEMP/structure.cfg")
     let 'FRAMES--'
 
-    # пускаем конвертацию в фоне
+    # Convert frames in the background
     proc=0
     for n in `seq 0 $FRAMES`; do
-        magick convert "${1}[${n}]" $(printf "%s/%s%03d" "$TEMP" frame. $n) &
+        magick "${1}[${n}]" $(printf "%s/%s%03d" "$TEMP" frame. $n) &
 
         let 'proc++'
-
         if [ $proc -gt 5 ]; then
             wait
             proc=0
         fi
     done
-
     wait
 fi
 
-echo Получилось кадров: $(ls -1 "$TEMP"/frame.* | wc -l)
-echo Перепаковка кадров утилитой gifinter
+echo Total frames: $(ls -1 "$TEMP"/frame.* | wc -l) "\n"
+echo "Re-packing frames with gifinter..."
 
 proc=0
-
 for name in "$TEMP"/frame.*; do
     (
         gifinter "$name" |
@@ -89,34 +83,32 @@ for name in "$TEMP"/frame.*; do
         rm -f "$name"
     ) &
     let 'proc++'
-
     if [ $proc -gt 5 ]; then
         wait
         proc=0
     fi
 done
-
 wait
 
-echo Сборка и сжатие результата
+echo "Building and gzipping the final GIF..."
 "$PYTHON" gifwritestructure.py "$TEMP" | gzip -9ncf > "$2"
 rm -rf "$TEMP"
 
-echo Результат занимает $(ls -hl "$2" | awk '{print $5}'), исходный файл $(ls -hl "$1" | awk '{print $5}')
+echo "Result size:   $(ls -hl "$2" | awk '{print $5}')"
+echo "Original size: $(ls -hl "$1" | awk '{print $5}')"
 
 newsize=$(ls -l "$2" | awk '{print $5}')
 origsize=$(ls -l "$1" | awk '{print $5}')
-
 let 'diff=origsize-newsize'
 
+echo
+
 case $diff in
-    0  )
-        echo Результат не изменился;;
-    -* )
+    0)
+        echo "No change in size.";;
+    -*)
         let 'diff=-diff'
-        echo '👎  Проигрыш:' $diff байт;;
-    *  )
-        echo '👍  Выигрыш:' $diff байт;;
+        echo "👎  Larger by $diff bytes.";;
+    *)
+        echo "👍  Smaller by $diff bytes.";;
 esac
-
-
