@@ -1,0 +1,19 @@
+## BolkedGIF
+
+A utility that converts animated images from the standard GIF format to an uncompressed GIF wrapped in gzip.
+
+Dependencies:
+    — ImageMagick
+    — libungif
+
+ImageMagick can be replaced with gifsicle, although this may corrupt some animation files.
+
+Usage example:
+    ./bolkedgif anim.gif anim.gif-gz
+
+To let a browser display this format, add the following lines to your .htaccess file (for Apache):
+
+    AddEncoding gzip .gif-gz
+    AddType image/gif .gif-gz
+
+P.S. Project status: proof of concept. The proof didn't quite succeed—the GIF was compressed, but the resulting file is larger than the original.
